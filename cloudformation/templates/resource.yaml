@@ -54,7 +54,7 @@ Resources:
                 - stateTable
                 - Arn
               - Fn::GetAtt:
-                - historyTable
+                - pollHistoryTable
                 - Arn
 
   # S3 bucket for log files.
@@ -118,11 +118,11 @@ Resources:
 
   # This is a table that records a history of pages detected.
   # Used by the new post notification microservice.
-  historyTable:
+  pollHistoryTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName:
-        Fn::Sub: ${AWS::StackName}-page-history
+        Fn::Sub: ${AWS::StackName}-poll-blog-history
       AttributeDefinitions:
         - AttributeName: url
           AttributeType: S
@@ -153,19 +153,19 @@ Outputs:
   HistoryTable:
     Description: Dynamo history table name
     Value:
-      Ref: historyTable
+      Ref: pollHistoryTable
     Export:
       Name: 
-        Fn::Sub: ${stackGroup}-historyTable
+        Fn::Sub: ${stackGroup}-pollHistoryTable
   HistoryTableARN:
     Description: Dynamo history table ARN
     Value:
       Fn::GetAtt: 
-        - historyTable
+        - pollHistoryTable
         - Arn
     Export:
       Name: 
-        Fn::Sub: ${stackGroup}-historyTableArn
+        Fn::Sub: ${stackGroup}-pollHistoryTableArn
   EventQueue:
     Description: Event queue for site actions
     Value:
