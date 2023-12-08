@@ -1,0 +1,18 @@
+[
+  {
+    "ParameterKey": "buildNotificationEmail",
+    "ParameterValue": "my-mail@gmail.com"
+  },
+  {
+    "ParameterKey": "contentRepo",
+    "ParameterValue": "my-content"
+  },
+  {
+    "ParameterKey": "sourceGitHubUser",
+    "ParameterValue": "tkrehbiel"
+  },
+  {
+    "ParameterKey": "sourceGitHubRepo",
+    "ParameterValue": "spiritriot"
+  }
+]

@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Spirit Riot long-term storage and services
+
+Parameters:
+  stackGroup:
+    Description: Unique infrastructure group name
+    Type: String
+
+Resources:
+  # TODO: Create an IAM user to access resources at runtime.
+  # Has to be an IAM user so we can export credentials.
+  # Unless we can figure out how to pass other kinds
+  # of credentials to the Next.js runtime.
+  runtimeUser:
+    Type: AWS::IAM::User
+
+  runtimePolicy:
+    Type: AWS::IAM::UserPolicy
+    Properties:
+      PolicyName: SpiritRiotRuntimePolicy
+      UserName:
+        Ref: runtimeUser
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: S3Read
+            Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:Head*
+              - s3:List*
+            Resource:
+              - Fn::Sub:
+                - arn:aws:s3:::${importedBucketName}
+                - importedBucketName:
+                    Fn::ImportValue:
+                      Fn::Sub: ${stackGroup}-jsonBucket
+              - Fn::Sub:
+                - arn:aws:s3:::${importedBucketName}/*
+                - importedBucketName:
+                    Fn::ImportValue:
+                      Fn::Sub: ${stackGroup}-jsonBucket
+          - Sid: DynamoUpdate
+            Effect: Allow
+            Action:
+              - dynamo:Get*
+              - dynamo:BatchGet*
+              - dynamo:Put*
+              - dynamo:BatchPut*
+              - dynamo:Scan*
+              - dynamo:Query*
+            Resource:
+              - Fn::GetAtt:
+                - stateTable
+                - Arn
+              - Fn::GetAtt:
+                - historyTable
+                - Arn
+
+  # S3 bucket for log files.
+  # For things like CloudFront distribution logs,
+  # which we can analyze to aggregate blog page statistics.
+  logBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: ${AWS::StackName}-logs
+      # Needed for CloudWatch:
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+
+  # Bucket policy required for CloudWatch to write logs to the bucket
+  logBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: logBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: logs.amazonaws.com
+            Action: s3:PutObject
+            Resource:
+              Fn::Sub: "arn:aws:s3:::${logBucket}/*"
+
+  # SQS queue for events
+  # TODO: Evaluate if we really need this
+  # Only used for incoming webmentions
+  eventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-events
+
+  newPostQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-newposts
+
+  stateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: ${AWS::StackName}-page-links
+      AttributeDefinitions:
+        - AttributeName: url
+          AttributeType: S
+      KeySchema:
+        - AttributeName: url
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+  # This is a table that records a history of pages detected.
+  # Used by the new post notification microservice.
+  historyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: ${AWS::StackName}-page-history
+      AttributeDefinitions:
+        - AttributeName: url
+          AttributeType: S
+      KeySchema:
+        - AttributeName: url
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+Outputs:
+  StateTable:
+    Description: Dynamo table containing dynamic content metadata
+    Value:
+      Ref: stateTable
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-stateTable
+  StateTableARN:
+    Description: Metadata table ARN
+    Value:
+      Fn::GetAtt: 
+        - stateTable
+        - Arn
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-stateTableArn
+  HistoryTable:
+    Description: Dynamo history table name
+    Value:
+      Ref: historyTable
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-historyTable
+  HistoryTableARN:
+    Description: Dynamo history table ARN
+    Value:
+      Fn::GetAtt: 
+        - historyTable
+        - Arn
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-historyTableArn
+  EventQueue:
+    Description: Event queue for site actions
+    Value:
+      Ref: eventQueue
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-eventQueue
+  EventQueueARN:
+    Description: Event queue ARN
+    Value:
+      Fn::GetAtt:
+        - eventQueue
+        - Arn
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-eventQueueArn
+  NewPostQueue:
+    Description: Message queue to handle new posts
+    Value:
+      Ref: newPostQueue
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-newPostQueue
+  NewPostQueueARN:
+    Description: ARN for new post queue
+    Value:
+      Fn::GetAtt:
+        - newPostQueue
+        - Arn
+    Export:
+      Name: 
+        Fn::Sub: ${stackGroup}-newPostQueueArn

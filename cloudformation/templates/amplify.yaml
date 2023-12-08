@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Spirit Riot resources for Amplify
+
+Parameters:
+  stackGroup:
+    Description: Unique infrastructure group name (required)
+    Type: String
+
+Resources:
+  # Role for Amplify to use as a service
+  amplifyServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - amplify.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      
+  # Policies to access above resources at runtime
+  amplifyServiceAccessPolicies:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName:
+        Ref: amplifyServiceRole
+      PolicyName: SpiritRiotFrontendPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PushLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/amplify/*:log-stream:*
+          - Sid: CreateLogGroup
+            Effect: Allow
+            Action: logs:CreateLogGroup
+            Resource:
+              Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/amplify/*
+          - Sid: DescribeLogGroups
+            Effect: Allow
+            Action: logs:DescribeLogGroups
+            Resource: 
+              Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*
+          # This allows our build script to access the output vars
+          # from our CloudFormation stack:
+          - Sid: DescribeStacks
+            Effect: Allow
+            Action: "cloudformation:DescribeStacks"
+            Resource:
+              Fn::Sub: arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${stackGroup}*
+          # Allow Amplify build to access our S3 content bucket
+          - Sid: S3Get
+            Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:Head* # used by aws s3 cp
+              - s3:List*
+            Resource:
+              # whew, weird syntax for this
+              - Fn::Sub:
+                - arn:aws:s3:::${importedBucketName}
+                - importedBucketName:
+                    Fn::ImportValue:
+                      Fn::Sub: ${stackGroup}-jsonBucket
+              - Fn::Sub:
+                - arn:aws:s3:::${importedBucketName}/*
+                - importedBucketName:
+                    Fn::ImportValue:
+                      Fn::Sub: ${stackGroup}-jsonBucket
