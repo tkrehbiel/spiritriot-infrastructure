@@ -1,4 +1,8 @@
-import { DynamoDBClient, BatchGetItemCommand, BatchWriteItemCommand } from '@aws-sdk/client-dynamodb';
+import {
+  DynamoDBClient,
+  BatchGetItemCommand,
+  BatchWriteItemCommand,
+} from '@aws-sdk/client-dynamodb';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import dotenv from 'dotenv';
@@ -12,7 +16,7 @@ const notifyQueueName = process.env.NOTIFY_QUEUE_NAME;
 const startTriggerDate = process.env.START_TRIGGER_DATE;
 const endTriggerDate = process.env.END_TRIGGER_DATE;
 
-const dynamoClient = new DynamoDBClient({ 
+const dynamoClient = new DynamoDBClient({
   region: process.env.AWS_REGION,
   credentials: fromNodeProviderChain(),
 });
@@ -25,7 +29,7 @@ const sqsClient = new SQSClient({
 class AppError extends Error {
   constructor(message) {
     super(message);
-    this.name = "AppError";
+    this.name = 'AppError';
   }
 }
 
@@ -33,21 +37,26 @@ async function fetchPosts(sourceUrl) {
   const posts = await fetch(sourceUrl)
     .then((response) => {
       if (response.status !== 200) {
-        throw new AppError(`received status ${response.status} while fetching ${sourceUrl}`);
+        throw new AppError(
+          `received status ${response.status} while fetching ${sourceUrl}`,
+        );
       }
       return response.json();
     })
     .then((data) => {
-      return data.items.filter((item) => 
-          item.date_published >= startTriggerDate
-          && item.date_published <= endTriggerDate)
+      return data.items
+        .filter(
+          (item) =>
+            item.date_published >= startTriggerDate &&
+            item.date_published <= endTriggerDate,
+        )
         .map((item) => {
           return {
-            postUrl: item.url, 
+            postUrl: item.url,
             postDate: item.date_published,
-          }
+          };
         });
-    })
+    });
   return posts;
 }
 
@@ -90,12 +99,12 @@ async function triggerNotifications(posts) {
   const promises = [];
   const newItems = [];
   for (const post of posts) {
-    console.log("triggering", post.postUrl);
+    console.log('triggering', post.postUrl);
     const message = {
       url: post.postUrl,
       published: post.postDate,
       detected: new Date().toISOString(),
-    }
+    };
     promises.push(sendMessage(message));
     newItems.push(message);
   }
@@ -105,7 +114,7 @@ async function triggerNotifications(posts) {
 
 async function writeNewItems(itemsToWrite) {
   if (itemsToWrite.length === 0) {
-    console.log("no new items to store")
+    console.log('no new items to store');
     return;
   }
   const batchWriteCommand = new BatchWriteItemCommand({
@@ -134,18 +143,18 @@ async function main() {
     // Get all posts from the source blog
     const posts = await fetchPosts(jsonFeedUrl);
 
-    console.log("blog post feed:")
+    console.log('blog post feed:');
     console.log(posts);
 
     const items = await findExistingItems(posts);
 
-    console.log("found in state table:")
+    console.log('found in state table:');
     console.log(items);
-  
+
     // Detect which posts are new, by comparing to the data store
     const newPosts = await detectNewPosts(posts, items);
 
-    console.log("new, untracked posts:");
+    console.log('new, untracked posts:');
     console.log(newPosts);
 
     // Generate notifications for each new post,
@@ -153,7 +162,7 @@ async function main() {
     try {
       const newItems = await triggerNotifications(newPosts);
 
-      console.log("new items to store:");
+      console.log('new items to store:');
       console.log(newItems);
 
       // Store the notification data in the data store
@@ -163,15 +172,13 @@ async function main() {
       throw error;
     }
   } catch (error) {
-    if (error instanceof AppError)
-      console.log(error.message);
-    else
-      throw error;
+    if (error instanceof AppError) console.log(error.message);
+    else throw error;
   }
 }
 
 // Invoke main() if run directly on command line
 if (import.meta.url === `file://${process.argv[1]}`) {
-    console.log("launching from command line");
-    (async () => await main())();
+  console.log('launching from command line');
+  (async () => await main())();
 }
