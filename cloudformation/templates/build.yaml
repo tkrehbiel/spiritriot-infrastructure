@@ -18,7 +18,7 @@ Parameters:
   sourceGitHubRepo:
     Description: GitHub Repo containing Hugo JSONify theme
     Type: String
-    Default: spiritriot
+    Default: spiritriot-generator
 
 Resources:
   # S3 bucket to hold build artifacts.
