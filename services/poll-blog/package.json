@@ -1,13 +1,22 @@
 {
-  "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.465.0",
-    "@aws-sdk/client-sqs": "^3.468.0",
-    "@aws-sdk/credential-providers": "^3.465.0",
-    "dotenv": "^16.3.1"
+  "name": "poll-blog",
+  "packageManager": "yarn@4.0.2",
+  "scripts": {
+    "run": "node index.mjs",
+    "lint": "eslint",
+    "prettier": "prettier --write .",
+    "postinstall": "husky install",
+    "test": "true"
   },
   "devDependencies": {
     "eslint": "^8.55.0",
+    "husky": "^8.0.3",
     "prettier": "3.1.0"
   },
-  "version": "0.0.0"
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.468.0",
+    "@aws-sdk/client-sqs": "^3.468.0",
+    "@aws-sdk/credential-providers": "^3.468.0",
+    "dotenv": "^16.3.1"
+  }
 }

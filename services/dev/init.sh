@@ -1,6 +1,7 @@
 corepack enable
 yarn init -2
 npm pkg set scripts.run="node index.mjs"
+npm pkg set scripts.test="true"
 yarn add eslint --dev
 npm pkg set scripts.lint="eslint"
 yarn add prettier --dev --exact
