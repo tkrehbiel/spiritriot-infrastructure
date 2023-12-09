@@ -1,0 +1,11 @@
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - npm install --only=production
+  build:
+    commands:
+      - zip -q -r deployment.zip index.mjs node_modules/*
+  post_build:
+    commands:
+      - aws lambda update-function-code --fuction-name $FUNCTION_NAME --zip-file=fileb://deployment.zip
