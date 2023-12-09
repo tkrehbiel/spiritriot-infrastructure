@@ -3,10 +3,11 @@ phases:
   pre_build:
     commands:
       - cd services/poll-blog
-      - npm install --only=production
+      - npm install --omit=dev
+      - npm test
   build:
     commands:
-      - zip -q -r deployment.zip index.mjs node_modules/*
+      - zip -q -r deployment.zip index.mjs
   post_build:
     commands:
       - echo updating $FUNCTION_NAME
