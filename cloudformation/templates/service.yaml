@@ -1,0 +1,698 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Spirit Riot microservices
+
+Parameters:
+  stackGroup:
+    Description: Unique infrastructure group name
+    Type: String
+  feedUrl:
+    Description: Feed url of blog to monitor
+    Type: String
+
+Resources:
+
+  # SQS queue to dispatch new post notifications
+  newPostQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-newposts
+
+  # SQS queue to post notifications
+  notificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-notifications
+
+  # SQS queue to send webmentions
+  outgoingWebMentionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-outgoing-webmentions
+
+  # TODO: It would be great to templateize these microservices
+  # Much of the YAML below is the same except for different names.
+
+  ### Poll Blog Microservice
+
+  pollBlogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  pollBlogRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName:
+        Ref: pollBlogRole
+      PolicyName: SpiritRiotLambdaPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - dynamodb:BatchGet*
+              - dynamodb:BatchWrite*
+            Resource:
+              Fn::GetAtt:
+                - pollHistoryTable
+                - Arn
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource:
+              - Fn::GetAtt:
+                - newPostQueue
+                - Arn
+
+  # This is a table that records a history of pages detected.
+  # Used by the new post notification microservice.
+  pollHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName:
+        Fn::Sub: ${AWS::StackName}-poll-blog-history
+      AttributeDefinitions:
+        - AttributeName: url
+          AttributeType: S
+      KeySchema:
+        - AttributeName: url
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+  # Lambda function to poll a blog's json feed for new posts
+  pollBlogFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role:
+        Fn::GetAtt:
+          - pollBlogRole
+          - Arn
+      Code:
+        ZipFile: exports.handler = async function(event) {}
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 7
+      Environment:
+        Variables:
+          JSON_FEED_URL:
+            Fn::Sub: ${feedUrl}
+          STATE_TABLE_NAME:
+            Ref: pollHistoryTable
+          NOTIFY_QUEUE_NAME:
+            Ref: newPostQueue
+          START_TRIGGER_DATE: '2023-12-01T00:00:00Z'
+          END_TRIGGER_DATE: '2026-12-01T00:00:00Z'
+
+  pollBlogBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - Name: EGV_SECRETS_NAME
+            Value:
+              Fn::Sub: ${stackGroup}-build-secrets
+          - Name: FUNCTION_NAME
+            Value:
+              Ref: pollBlogFunction
+      Source:
+        Type: GITHUB
+        Location:
+          Fn::Sub: https://github.com/tkrehbiel/spiritriot-poller-service
+
+  pollBlogBuildPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Stages:
+        - Name: GetSource
+          Actions:
+            - Name: SourceRepo
+              RunOrder: 1
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: tkrehbiel
+                Repo: spiritriot-poller-service
+                Branch: main
+                OAuthToken:
+                  Fn::Sub: '{{resolve:secretsmanager:${stackGroup}-build-secrets:SecretString:githubToken}}'
+              OutputArtifacts:
+                - Name: SourceArtifacts
+        - Name: BuildService
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: pollBlogBuildProject
+              InputArtifacts:
+                - Name: SourceArtifacts
+
+
+  ### New Post Notification Dispatcher Microservice
+
+  dispatcherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  dispatcherRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName:
+        Ref: dispatcherRole
+      PolicyName: SpiritRiotLambdaPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource:
+              Fn::GetAtt:
+                - newPostQueue
+                - Arn
+          - Effect: Allow
+            Action:
+              - sqs:SendMessage
+            Resource:
+              - Fn::GetAtt:
+                - notificationQueue
+                - Arn
+              - Fn::GetAtt:
+                - outgoingWebMentionQueue
+                - Arn
+
+  # Lambda function to dispatch notifications on new posts
+  dispatcherFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: exports.handler = async function(event) {}
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+          - dispatcherRole
+          - Arn
+      Runtime: nodejs20.x
+
+  # Call the dispatch function on incoming messages
+  dispatcherMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      EventSourceArn:
+        Fn::GetAtt: 
+          - newPostQueue
+          - Arn
+      FunctionName:
+        Ref: dispatcherFunction
+
+  dispatcherBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - Name: EGV_SECRETS_NAME
+            Value:
+              Fn::Sub: ${stackGroup}-build-secrets
+          - Name: FUNCTION_NAME
+            Value:
+              Ref: dispatcherFunction
+      Source:
+        Type: GITHUB
+        Location:
+          Fn::Sub: https://github.com/tkrehbiel/spiritriot-dispatcher-service
+
+  dispatcherBuildPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Stages:
+        - Name: GetSource
+          Actions:
+            - Name: SourceRepo
+              RunOrder: 1
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: tkrehbiel
+                Repo: spiritriot-dispatcher-service
+                Branch: main
+                OAuthToken:
+                  Fn::Sub: '{{resolve:secretsmanager:${stackGroup}-build-secrets:SecretString:githubToken}}'
+              OutputArtifacts:
+                - Name: SourceArtifacts
+        - Name: BuildService
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: dispatcherBuildProject
+              InputArtifacts:
+                - Name: SourceArtifacts
+
+
+  ### Notification Microservice
+
+  notifierRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  notifierRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName:
+        Ref: notifierRole
+      PolicyName: SpiritRiotLambdaPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource:
+              Fn::GetAtt:
+                - notificationQueue
+                - Arn
+
+  # Lambda function to dispatch notifications on new posts
+  notifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: exports.handler = async function(event, context) { console.log(event) }
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+          - notifierRole
+          - Arn
+      Runtime: nodejs20.x
+
+  # Call the dispatch function on incoming messages
+  notifierMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      EventSourceArn:
+        Fn::GetAtt: 
+          - notificationQueue
+          - Arn
+      FunctionName:
+        Ref: notifierFunction
+
+  notifierBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - Name: EGV_SECRETS_NAME
+            Value:
+              Fn::Sub: ${stackGroup}-build-secrets
+          - Name: FUNCTION_NAME
+            Value:
+              Ref: notifierFunction
+      Source:
+        Type: GITHUB
+        Location:
+          Fn::Sub: https://github.com/tkrehbiel/spiritriot-notifier-service
+
+  notifierBuildPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Stages:
+        - Name: GetSource
+          Actions:
+            - Name: SourceRepo
+              RunOrder: 1
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: tkrehbiel
+                Repo: spiritriot-notifier-service
+                Branch: main
+                OAuthToken:
+                  Fn::Sub: '{{resolve:secretsmanager:${stackGroup}-build-secrets:SecretString:githubToken}}'
+              OutputArtifacts:
+                - Name: SourceArtifacts
+        - Name: BuildService
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: notifierBuildProject
+              InputArtifacts:
+                - Name: SourceArtifacts
+
+
+  ### Outgoing WebMention Microservice
+
+  outgoingWebMentionerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  outgoingWebMentionerRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName:
+        Ref: outgoingWebMentionerRole
+      PolicyName: SpiritRiotLambdaPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource:
+              Fn::GetAtt:
+                - outgoingWebMentionQueue
+                - Arn
+
+  outgoingWebMentionerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: exports.handler = async function(event) {}
+      Handler: index.handler
+      Role:
+        Fn::GetAtt:
+          - outgoingWebMentionerRole
+          - Arn
+      Runtime: nodejs20.x
+
+  outgoingWebMentionerMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 1
+      EventSourceArn:
+        Fn::GetAtt: 
+          - outgoingWebMentionQueue
+          - Arn
+      FunctionName:
+        Ref: outgoingWebMentionerFunction
+
+  outgoingWebMentionerBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      Artifacts:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
+        EnvironmentVariables:
+          - Name: EGV_SECRETS_NAME
+            Value:
+              Fn::Sub: ${stackGroup}-build-secrets
+          - Name: FUNCTION_NAME
+            Value:
+              Ref: dispatcherFunction
+      Source:
+        Type: GITHUB
+        Location:
+          Fn::Sub: https://github.com/tkrehbiel/spiritriot-outgoing-webmentioner-service
+
+  outgoingWebMentionerBuildPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn:
+        Fn::GetAtt:
+          - serviceBuildRole
+          - Arn
+      ArtifactStore:
+        Type: S3
+        Location:
+          Ref: artifactBucket
+      Stages:
+        - Name: GetSource
+          Actions:
+            - Name: SourceRepo
+              RunOrder: 1
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Version: 1
+                Provider: GitHub
+              Configuration:
+                Owner: tkrehbiel
+                Repo: spiritriot-outgoing-webmentioner-service
+                Branch: main
+                OAuthToken:
+                  Fn::Sub: '{{resolve:secretsmanager:${stackGroup}-build-secrets:SecretString:githubToken}}'
+              OutputArtifacts:
+                - Name: SourceArtifacts
+        - Name: BuildService
+          Actions:
+            - Name: BuildAction
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: outgoingWebMentionerBuildProject
+              InputArtifacts:
+                - Name: SourceArtifacts
+
+
+
+  #### Roles and policies for CodeBuild
+
+  # S3 bucket to hold build artifacts.
+  artifactBucket:
+    Type: AWS::S3::Bucket
+
+  # Role to access resources at build time
+  serviceBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Allow CodePipeline to assume this role
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - sts:AssumeRole
+          # Allow CodeBuild to assume this role
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  # Policies for buildServiceRole to access resources
+  serviceBuildPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      RoleName:
+        Ref: serviceBuildRole
+      PolicyName: SpiritRiotServiceBuildPolicies
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # Allow CodeBuild to write CloudWatch logs
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:*:*:*            
+          # Allows CodePipeline to start the builds
+          - Effect: Allow
+            Action:
+              - codebuild:StartBuild
+              - codebuild:BatchGetBuilds
+            Resource:
+              - Fn::GetAtt:
+                  - pollBlogBuildProject
+                  - Arn
+              - Fn::GetAtt:
+                  - dispatcherBuildProject
+                  - Arn
+              - Fn::GetAtt:
+                  - notifierBuildProject
+                  - Arn
+              - Fn::GetAtt:
+                  - outgoingWebMentionerBuildProject
+                  - Arn
+          # Allows CodePipeline to store artifacts
+          - Effect: Allow
+            Action: s3:*
+            Resource:
+              - Fn::GetAtt:
+                - artifactBucket
+                - Arn
+              - Fn::Sub: arn:aws:s3:::${artifactBucket}/*
+          - Effect: Allow
+            Action: lambda:UpdateFunctionCode
+            Resource:
+              - Fn::GetAtt:
+                - pollBlogFunction
+                - Arn
+              - Fn::GetAtt:
+                - dispatcherFunction
+                - Arn
+              - Fn::GetAtt:
+                - notifierFunction
+                - Arn
+              - Fn::GetAtt:
+                - outgoingWebMentionerFunction
+                - Arn

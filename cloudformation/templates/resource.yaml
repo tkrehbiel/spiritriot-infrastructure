@@ -53,9 +53,15 @@ Resources:
               - Fn::GetAtt:
                 - stateTable
                 - Arn
-              - Fn::GetAtt:
-                - pollHistoryTable
-                - Arn
+
+  # SQS queue for events
+  # TODO: Evaluate if we really need this
+  # Only used for incoming webmentions
+  eventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-events
 
   # S3 bucket for log files.
   # For things like CloudFront distribution logs,
@@ -86,43 +92,11 @@ Resources:
             Resource:
               Fn::Sub: "arn:aws:s3:::${logBucket}/*"
 
-  # SQS queue for events
-  # TODO: Evaluate if we really need this
-  # Only used for incoming webmentions
-  eventQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName:
-        Fn::Sub: ${AWS::StackName}-events
-
-  newPostQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName:
-        Fn::Sub: ${AWS::StackName}-newposts
-
   stateTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName:
         Fn::Sub: ${AWS::StackName}-page-links
-      AttributeDefinitions:
-        - AttributeName: url
-          AttributeType: S
-      KeySchema:
-        - AttributeName: url
-          KeyType: HASH
-      ProvisionedThroughput:
-        ReadCapacityUnits: 1
-        WriteCapacityUnits: 1
-
-  # This is a table that records a history of pages detected.
-  # Used by the new post notification microservice.
-  pollHistoryTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName:
-        Fn::Sub: ${AWS::StackName}-poll-blog-history
       AttributeDefinitions:
         - AttributeName: url
           AttributeType: S
@@ -150,22 +124,6 @@ Outputs:
     Export:
       Name: 
         Fn::Sub: ${stackGroup}-stateTableArn
-  HistoryTable:
-    Description: Dynamo history table name
-    Value:
-      Ref: pollHistoryTable
-    Export:
-      Name: 
-        Fn::Sub: ${stackGroup}-pollHistoryTable
-  HistoryTableARN:
-    Description: Dynamo history table ARN
-    Value:
-      Fn::GetAtt: 
-        - pollHistoryTable
-        - Arn
-    Export:
-      Name: 
-        Fn::Sub: ${stackGroup}-pollHistoryTableArn
   EventQueue:
     Description: Event queue for site actions
     Value:
@@ -182,19 +140,3 @@ Outputs:
     Export:
       Name: 
         Fn::Sub: ${stackGroup}-eventQueueArn
-  NewPostQueue:
-    Description: Message queue to handle new posts
-    Value:
-      Ref: newPostQueue
-    Export:
-      Name: 
-        Fn::Sub: ${stackGroup}-newPostQueue
-  NewPostQueueARN:
-    Description: ARN for new post queue
-    Value:
-      Fn::GetAtt:
-        - newPostQueue
-        - Arn
-    Export:
-      Name: 
-        Fn::Sub: ${stackGroup}-newPostQueueArn
