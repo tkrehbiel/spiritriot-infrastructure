@@ -9,4 +9,5 @@ phases:
       - zip -q -r deployment.zip index.mjs node_modules/*
   post_build:
     commands:
-      - aws lambda update-function-code --fuction-name $FUNCTION_NAME --zip-file=fileb://deployment.zip
+      - echo updating $FUNCTION_NAME
+      - aws lambda update-function-code --function-name $FUNCTION_NAME --zip-file=fileb://deployment.zip
