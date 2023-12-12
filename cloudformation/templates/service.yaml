@@ -247,14 +247,25 @@ Resources:
   dispatcherFunction:
     Type: AWS::Lambda::Function
     Properties:
-      Code:
-        ZipFile: exports.handler = async function(event) {}
-      Handler: index.handler
+      Handler: bootstrap
       Role:
         Fn::GetAtt:
           - dispatcherRole
           - Arn
-      Runtime: nodejs20.x
+      Code:
+        S3Bucket: spiritriot-artifacts
+        S3Key: emptyfunction.zip
+      Runtime: provided.al2023
+      Architectures:
+        - arm64
+      Environment:
+        Variables:
+          INCOMING_QUEUE:
+            Ref: newPostQueue
+          NOTIFIER_QUEUE:
+            Ref: notificationQueue
+          WEBMENTION_QUEUE:
+            Ref: outgoingWebMentionQueue
 
   # Call the dispatch function on incoming messages
   dispatcherMapping:
@@ -391,6 +402,10 @@ Resources:
           - notifierRole
           - Arn
       Runtime: nodejs20.x
+      Environment:
+        Variables:
+          INCOMING_QUEUE:
+            Ref: notificationQueue
 
   # Call the dispatch function on incoming messages
   notifierMapping:
@@ -526,6 +541,10 @@ Resources:
           - outgoingWebMentionerRole
           - Arn
       Runtime: nodejs20.x
+      Environment:
+        Variables:
+          INCOMING_QUEUE:
+            Ref: outgoingWebMentionQueue
 
   outgoingWebMentionerMapping:
     Type: AWS::Lambda::EventSourceMapping
