@@ -11,26 +11,47 @@ Parameters:
 
 Resources:
 
-  # SQS queue to dispatch new post notifications
-  newPostQueue:
-    Type: AWS::SQS::Queue
+  newPostTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      QueueName:
-        Fn::Sub: ${AWS::StackName}-newposts
+      TopicName:
+        Fn::Sub: ${AWS::StackName}-new-posts
 
-  # SQS queue to post notifications
-  notificationQueue:
-    Type: AWS::SQS::Queue
+  newPostTopicAccessPolicy:
+    Type: AWS::SNS::TopicPolicy
     Properties:
-      QueueName:
-        Fn::Sub: ${AWS::StackName}-notifications
+      Topics:
+        - Ref: newPostTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sns:Publish
+            Resource:
+              Ref: newPostTopic
 
-  # SQS queue to send webmentions
-  outgoingWebMentionQueue:
-    Type: AWS::SQS::Queue
+  outgoingMentionTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      QueueName:
-        Fn::Sub: ${AWS::StackName}-outgoing-webmentions
+      TopicName:
+        Fn::Sub: ${AWS::StackName}-outgoing-mentions
+
+  outgoingMentionTopicAccessPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - Ref: outgoingMentionTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sns:Publish
+            Resource:
+              Ref: outgoingMentionTopic
 
   # TODO: It would be great to templateize these microservices
   # Much of the YAML below is the same except for different names.
@@ -75,11 +96,9 @@ Resources:
                 - Arn
           - Effect: Allow
             Action:
-              - sqs:SendMessage
+              - sns:Publish
             Resource:
-              - Fn::GetAtt:
-                - newPostQueue
-                - Arn
+              - Ref: newPostTopic
 
   # This is a table that records a history of pages detected.
   # Used by the new post notification microservice.
@@ -117,8 +136,8 @@ Resources:
             Fn::Sub: ${feedUrl}
           STATE_TABLE_NAME:
             Ref: pollHistoryTable
-          NOTIFY_QUEUE_NAME:
-            Ref: newPostQueue
+          NOTIFY_TOPIC_ARN:
+            Ref: newPostTopic
           START_TRIGGER_DATE: '2023-12-01T00:00:00Z'
           END_TRIGGER_DATE: '2026-12-01T00:00:00Z'
 
@@ -193,7 +212,7 @@ Resources:
                 - Name: SourceArtifacts
 
 
-  ### New Post Notification Dispatcher Microservice
+  ### Dispatcher Microservice
 
   dispatcherRole:
     Type: AWS::IAM::Role
@@ -225,23 +244,14 @@ Resources:
             Resource: '*'
           - Effect: Allow
             Action:
-              - sqs:ReceiveMessage
-              - sqs:DeleteMessage
-              - sqs:GetQueueAttributes
+              - sns:Subscribe
             Resource:
-              Fn::GetAtt:
-                - newPostQueue
-                - Arn
+              Ref: newPostTopic
           - Effect: Allow
             Action:
-              - sqs:SendMessage
+              - sns:Publish
             Resource:
-              - Fn::GetAtt:
-                - notificationQueue
-                - Arn
-              - Fn::GetAtt:
-                - outgoingWebMentionQueue
-                - Arn
+              - Ref: outgoingMentionTopic
 
   # Lambda function to dispatch notifications on new posts
   dispatcherFunction:
@@ -260,24 +270,31 @@ Resources:
         - arm64
       Environment:
         Variables:
-          INCOMING_QUEUE:
-            Ref: newPostQueue
-          NOTIFIER_QUEUE:
-            Ref: notificationQueue
-          WEBMENTION_QUEUE:
-            Ref: outgoingWebMentionQueue
+          WEBMENTION_TOPIC:
+            Ref: outgoingMentionTopic
 
-  # Call the dispatch function on incoming messages
-  dispatcherMapping:
-    Type: AWS::Lambda::EventSourceMapping
+  dispatcherPermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      BatchSize: 1
-      EventSourceArn:
-        Fn::GetAtt: 
-          - newPostQueue
-          - Arn
+      Action: lambda:InvokeFunction
       FunctionName:
-        Ref: dispatcherFunction
+        Fn::GetAtt:
+          - dispatcherFunction
+          - Arn
+      Principal: sns.amazonaws.com
+      SourceArn:
+        Ref: newPostTopic
+      
+  dispatcherSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn:
+        Ref: newPostTopic
+      Endpoint:
+        Fn::GetAtt:
+          - dispatcherFunction
+          - Arn
 
   dispatcherBuildProject:
     Type: AWS::CodeBuild::Project
@@ -382,13 +399,9 @@ Resources:
             Resource: '*'
           - Effect: Allow
             Action:
-              - sqs:ReceiveMessage
-              - sqs:DeleteMessage
-              - sqs:GetQueueAttributes
+              - sns:Subscribe
             Resource:
-              Fn::GetAtt:
-                - notificationQueue
-                - Arn
+              Ref: newPostTopic
 
   # Lambda function to dispatch notifications on new posts
   notifierFunction:
@@ -402,22 +415,29 @@ Resources:
           - notifierRole
           - Arn
       Runtime: nodejs20.x
-      Environment:
-        Variables:
-          INCOMING_QUEUE:
-            Ref: notificationQueue
 
-  # Call the dispatch function on incoming messages
-  notifierMapping:
-    Type: AWS::Lambda::EventSourceMapping
+  notifierPermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      BatchSize: 1
-      EventSourceArn:
-        Fn::GetAtt: 
-          - notificationQueue
-          - Arn
+      Action: lambda:InvokeFunction
       FunctionName:
-        Ref: notifierFunction
+        Fn::GetAtt:
+          - notifierFunction
+          - Arn
+      Principal: sns.amazonaws.com
+      SourceArn:
+        Ref: newPostTopic
+
+  notifierSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn:
+        Ref: newPostTopic
+      Endpoint:
+        Fn::GetAtt:
+          - notifierFunction
+          - Arn
 
   notifierBuildProject:
     Type: AWS::CodeBuild::Project
@@ -522,13 +542,9 @@ Resources:
             Resource: '*'
           - Effect: Allow
             Action:
-              - sqs:ReceiveMessage
-              - sqs:DeleteMessage
-              - sqs:GetQueueAttributes
+              - sns:Subscribe
             Resource:
-              Fn::GetAtt:
-                - outgoingWebMentionQueue
-                - Arn
+              Ref: outgoingMentionTopic
 
   outgoingWebMentionerFunction:
     Type: AWS::Lambda::Function
@@ -541,21 +557,29 @@ Resources:
           - outgoingWebMentionerRole
           - Arn
       Runtime: nodejs20.x
-      Environment:
-        Variables:
-          INCOMING_QUEUE:
-            Ref: outgoingWebMentionQueue
 
-  outgoingWebMentionerMapping:
-    Type: AWS::Lambda::EventSourceMapping
+  outgoingWebMentionerPermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      BatchSize: 1
-      EventSourceArn:
-        Fn::GetAtt: 
-          - outgoingWebMentionQueue
-          - Arn
+      Action: lambda:InvokeFunction
       FunctionName:
-        Ref: outgoingWebMentionerFunction
+        Fn::GetAtt:
+          - outgoingWebMentionerFunction
+          - Arn
+      Principal: sns.amazonaws.com
+      SourceArn:
+        Ref: outgoingMentionTopic
+
+  outgoingWebMentionerSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: lambda
+      TopicArn:
+        Ref: outgoingMentionTopic
+      Endpoint:
+        Fn::GetAtt:
+          - outgoingWebMentionerFunction
+          - Arn
 
   outgoingWebMentionerBuildProject:
     Type: AWS::CodeBuild::Project
